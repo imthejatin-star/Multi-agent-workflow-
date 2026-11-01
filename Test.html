@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Zero-Gravity Connected Nodes — Thin Strings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #0b0b0e;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+    }
+
+    #network-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      z-index: 1;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    #network-canvas.grabbing { cursor: grabbing; }
+    #network-canvas.on-node { cursor: pointer; }
+    #network-canvas.connecting { cursor: crosshair; }
+
+    .toolbar {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(20, 20, 28, 0.88);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 0.85rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      max-width: calc(100vw - 20px);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .toolbar button {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      touch-action: manipulation;
+      min-height: 36px;
+      white-space: nowrap;
+    }
+
+    .toolbar button:hover { background: rgba(255, 255, 255, 0.16); }
+    .toolbar button:active { transform: translateY(1px); }
+
+    .toolbar button.active {
+      background: rgba(120, 170, 255, 0.3);
+      border-color: rgba(120, 170, 255, 0.6);
+      color: #fff;
+    }
+
+    .toolbar .hint {
+      color: rgba(255, 255, 255, 0.45);
+      font-size: 0.75rem;
+      padding: 0 4px;
+      line-height: 1.2;
+    }
+
+    .editor {
+      position: fixed;
+      z-index: 4;
+      background: rgba(20, 20, 28, 0.97);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 14px;
+      color: #fff;
+      font-size: 0.9rem;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      display: none;
+      width: 260px;
+    }
+
+    .editor.visible { display: block; }
+
+    .editor label {
+      display: block;
+      margin-bottom: 6px;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .editor input {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 1rem;
+      outline: none;
+      margin-bottom: 12px;
+    }
+
+    .editor input:focus { border-color: rgba(255, 255, 255, 0.4); }
+
+    .editor .actions { display: flex; gap: 8px; }
+
+    .editor .actions button {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      cursor: pointer;
+      min-height: 40px;
+      touch-action: manipulation;
+    }
+
+    .editor .actions button.primary {
+      background: rgba(120, 170, 255, 0.25);
+      border-color: rgba(120, 170, 255, 0.5);
+    }
+
+    .editor .actions button.danger {
+      background: rgba(255, 100, 100, 0.2);
+      border-color: rgba(255, 100, 100, 0.4);
+    }
+
+    .editor .actions button:hover { filter: brightness(1.3); }
+  </style>
+</head>
+<body>
+
+  <canvas id="network-canvas"></canvas>
+
+  <div class="toolbar">
+    <button id="connectBtn" title="Drag from one node to another to connect">🔗 Connect: OFF</button>
+    <button id="resetBtn">Reset</button>
+    <span class="hint">Drag nodes · Tap to edit · Double-tap empty to add</span>
+  </div>
+
+  <div class="editor" id="editor">
+    <label for="nodeLabel">Node label</label>
+    <input type="text" id="nodeLabel" placeholder="Type something…" autocomplete="off">
+    <div class="actions">
+      <button class="primary" id="saveBtn">Save</button>
+      <button class="danger" id="deleteBtn">Delete</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const canvas = document.getElementById('network-canvas');
+      const ctx = canvas.getContext('2d');
+      const editor = document.getElementById('editor');
+      const nodeLabelInput = document.getElementById('nodeLabel');
+      const saveBtn = document.getElementById('saveBtn');
+      const deleteBtn = document.getElementById('deleteBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const connectBtn = document.getElementById('connectBtn');
+
+      // ============================================================
+      // 1. INITIAL NODES
+      // ============================================================
+      const initialNodeData = [
+        { id: '1', label: 'Learn' },
+        { id: '2', label: 'Anything' },
+        { id: '3', label: 'Knowledge' },
+        { id: '4', label: 'Map' },
+        { id: '5', label: 'Explore' },
+        { id: '6', label: 'Curate' },
+        { id: '7', label: 'Path' },
+        { id: '8', label: 'Topic' },
+      ];
+
+      // ============================================================
+      // 2. CONFIG — Thinner strings, cleaner node look
+      // ============================================================
+      const CONFIG = {
+        // Zero-gravity physics
+        driftSpeed: 0.06,
+        driftJitter: 0.004,
+        springStiffness: 0.0018,
+        springRestLength: 180,
+        damping: 0.985,
+        maxSpeed: 0.9,
+
+        // Node styling — subtle and minimal
+        nodeRadius: 26,
+        nodeColor: '18, 18, 24',
+        textColor: '230, 230, 235',
+        borderColor: '255, 255, 255',
+        borderOpacity: 0.18,
+        fontSize: 12,
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        pulseSpeed: 0.015,
+
+        // Edge styling — THIN strings
+        lineWidth: 0.8,              // Thin line
+        edgeColor: '255, 255, 255',
+        edgeOpacity: 0.22,           // Subtle, not distracting
+        edgeHighlight: '120, 170, 255',
+
+        // Interaction
+        mouseRadius: 150,
+        dragThreshold: 6,
+        edgeHitTolerance: 10
+      };
+
+      let width, height;
+      let nodes = [];
+      let edges = [];
+      let mouse = { x: null, y: null };
+      let rafId = null;
+
+      let dragState = {
+        active: false,
+        node: null,
+        offsetX: 0,
+        offsetY: 0,
+        startX: 0,
+        startY: 0,
+        moved: false,
+        pointerId: null
+      };
+
+      let connectMode = false;
+      let connectDrag = {
+        active: false,
+        fromNode: null,
+        currentX: 0,
+        currentY: 0
+      };
+
+      let editingNode = null;
+
+      // ============================================================
+      // 3. NODE CLASS — minimal, flat design
+      // ============================================================
+      class Node {
+        constructor(data, w, h) {
+          this.id = data.id || Math.random().toString(36).slice(2, 9);
+          this.label = data.label || '';
+          this.x = data.x !== undefined ? data.x : Math.random() * w;
+          this.y = data.y !== undefined ? data.y : Math.random() * h;
+
+          const angle = Math.random() * Math.PI * 2;
+          this.vx = Math.cos(angle) * CONFIG.driftSpeed;
+          this.vy = Math.sin(angle) * CONFIG.driftSpeed;
+
+          this.radius = CONFIG.nodeRadius + (Math.random() * 4 - 2);
+          this.pulse = Math.random() * Math.PI * 2;
+        }
+
+        update(w, h, isBeingDragged) {
+          if (isBeingDragged) {
+            this.vx = 0;
+            this.vy = 0;
+            return;
+          }
+
+          // Tiny random jitter
+          this.vx += (Math.random() - 0.5) * CONFIG.driftJitter;
+          this.vy += (Math.random() - 0.5) * CONFIG.driftJitter;
+
+          // Soft mouse repulsion
+          if (mouse.x !== null && mouse.y !== null) {
+            const dx = this.x - mouse.x;
+            const dy = this.y - mouse.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < CONFIG.mouseRadius && dist > 0.1) {
+              const force = (CONFIG.mouseRadius - dist) / CONFIG.mouseRadius;
+              this.vx += (dx / dist) * force * 0.05;
+              this.vy += (dy / dist) * force * 0.05;
+            }
+          }
+
+          this.x += this.vx;
+          this.y += this.vy;
+
+          // Soft wrap at edges
+          const margin = this.radius * 2;
+          if (this.x < -margin) { this.x = w + margin; this.vx *= 0.5; }
+          else if (this.x > w + margin) { this.x = -margin; this.vx *= 0.5; }
+          if (this.y < -margin) { this.y = h + margin; this.vy *= 0.5; }
+          else if (this.y > h + margin) { this.y = -margin; this.vy *= 0.5; }
+
+          // Damping
+          this.vx *= CONFIG.damping;
+          this.vy *= CONFIG.damping;
+
+          // Speed cap
+          const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+          if (speed > CONFIG.maxSpeed) {
+            this.vx = (this.vx / speed) * CONFIG.maxSpeed;
+            this.vy = (this.vy / speed) * CONFIG.maxSpeed;
+          }
+
+          // Minimum drift
+          if (speed < 0.02) {
+            const a = Math.random() * Math.PI * 2;
+            this.vx += Math.cos(a) * 0.01;
+            this.vy += Math.sin(a) * 0.01;
+          }
+
+          this.pulse += CONFIG.pulseSpeed;
+        }
+
+        draw(ctx, isConnectSource) {
+          const currentRadius = this.radius * (0.97 + 0.03 * Math.sin(this.pulse));
+
+          // Flat dark circle
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, currentRadius, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${CONFIG.nodeColor}, 0.95)`;
+          ctx.fill();
+
+          // Very subtle border
+          ctx.strokeStyle = `rgba(${CONFIG.borderColor}, ${CONFIG.borderOpacity})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          // Connect-source highlight
+          if (isConnectSource) {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, currentRadius + 3, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(${CONFIG.edgeHighlight}, 0.6)`;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
+
+          // Label
+          if (this.label) {
+            ctx.font = `${CONFIG.fontSize}px ${CONFIG.fontFamily}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(${CONFIG.textColor}, 0.9)`;
+            ctx.fillText(this.label, this.x, this.y);
+          }
+        }
+
+        contains(px, py) {
+          const dx = px - this.x;
+          const dy = py - this.y;
+          return dx * dx + dy * dy <= this.radius * this.radius;
+        }
+      }
+
+      // ============================================================
+      // 4. SPRING PHYSICS
+      // ============================================================
+      function applySprings() {
+        for (const edge of edges) {
+          const n1 = getNodeById(edge.a);
+          const n2 = getNodeById(edge.b);
+          if (!n1 || !n2) continue;
+
+          if (dragState.active && (dragState.node === n1 || dragState.node === n2)) continue;
+
+          const dx = n2.x - n1.x;
+          const dy = n2.y - n1.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+
+          const displacement = dist - CONFIG.springRestLength;
+          const force = CONFIG.springStiffness * displacement;
+
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+
+          n1.vx += fx;
+          n1.vy += fy;
+          n2.vx -= fx;
+          n2.vy -= fy;
+        }
+      }
+
+      // ============================================================
+      // 5. SETUP
+      // ============================================================
+      function resize(keepNodes) {
+        const dpr = window.devicePixelRatio || 1;
+        const oldW = width, oldH = height;
+        width = window.innerWidth;
+        height = window.innerHeight;
+
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        if (!keepNodes) {
+          initNodes();
+        } else if (oldW && oldH) {
+          const sx = width / oldW;
+          const sy = height / oldH;
+          for (const n of nodes) {
+            n.x *= sx;
+            n.y *= sy;
+          }
+        }
+      }
+
+      function initNodes() {
+        nodes = [];
+        edges = [];
+        for (const data of initialNodeData) {
+          nodes.push(new Node(data, width, height));
+        }
+      }
+
+      function getNodeById(id) {
+        return nodes.find(n => n.id === id);
+      }
+
+      function hasEdge(aId, bId) {
+        return edges.some(e =>
+          (e.a === aId && e.b === bId) || (e.a === bId && e.b === aId)
+        );
+      }
+
+      function addEdge(aId, bId) {
+        if (aId === bId) return;
+        if (hasEdge(aId, bId)) return;
+        edges.push({ a: aId, b: bId });
+      }
+
+      function removeEdge(edge) {
+        edges = edges.filter(e => e !== edge);
+      }
+
+      // ============================================================
+      // 6. RENDERING — thin, sagging strings
+      // ============================================================
+      function draw() {
+        ctx.clearRect(0, 0, width, height);
+
+        // Draw edges — thin curved lines
+        for (const edge of edges) {
+          const n1 = getNodeById(edge.a);
+          const n2 = getNodeById(edge.b);
+          if (!n1 || !n2) continue;
+
+          const dx = n2.x - n1.x;
+          const dy = n2.y - n1.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+
+          // Sag amount: more sag when closer (slack string)
+          const stretchRatio = Math.min(dist / CONFIG.springRestLength, 2);
+          const sagAmount = Math.max(0, (1 - stretchRatio * 0.5)) * 10;
+
+          const midX = (n1.x + n2.x) / 2;
+          const midY = (n1.y + n2.y) / 2;
+          const perpX = -dy / dist;
+          const perpY = dx / dist;
+
+          const cpX = midX + perpX * sagAmount;
+          const cpY = midY + perpY * sagAmount;
+
+          ctx.beginPath();
+          ctx.moveTo(n1.x, n1.y);
+          ctx.quadraticCurveTo(cpX, cpY, n2.x, n2.y);
+          ctx.strokeStyle = `rgba(${CONFIG.edgeColor}, ${CONFIG.edgeOpacity})`;
+          ctx.lineWidth = CONFIG.lineWidth;
+          ctx.stroke();
+        }
+
+        // Connect-drag preview
+        if (connectDrag.active && connectDrag.fromNode) {
+          ctx.beginPath();
+          ctx.moveTo(connectDrag.fromNode.x, connectDrag.fromNode.y);
+          ctx.lineTo(connectDrag.currentX, connectDrag.currentY);
+          ctx.strokeStyle = `rgba(${CONFIG.edgeHighlight}, 0.7)`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Draw nodes
+        for (const node of nodes) {
+          const isSource = connectDrag.active && connectDrag.fromNode === node;
+          node.draw(ctx, isSource);
+        }
+      }
+
+      function animate() {
+        applySprings();
+
+        for (const node of nodes) {
+          const isBeingDragged = dragState.active && dragState.node === node;
+          node.update(width, height, isBeingDragged);
+        }
+
+        draw();
+        rafId = requestAnimationFrame(animate);
+      }
+
+      // ============================================================
+      // 7. HIT TESTING
+      // ============================================================
+      function getNodeAt(px, py) {
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          if (nodes[i].contains(px, py)) return nodes[i];
+        }
+        return null;
+      }
+
+      function distanceToEdge(px, py, n1, n2) {
+        const dx = n2.x - n1.x;
+        const dy = n2.y - n1.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+        const stretchRatio = Math.min(dist / CONFIG.springRestLength, 2);
+        const sagAmount = Math.max(0, (1 - stretchRatio * 0.5)) * 10;
+
+        const midX = (n1.x + n2.x) / 2;
+        const midY = (n1.y + n2.y) / 2;
+        const perpX = -dy / dist;
+        const perpY = dx / dist;
+        const cpX = midX + perpX * sagAmount;
+        const cpY = midY + perpY * sagAmount;
+
+        let minDist = Infinity;
+        const samples = 20;
+        for (let i = 0; i <= samples; i++) {
+          const t = i / samples;
+          const mt = 1 - t;
+          const bx = mt * mt * n1.x + 2 * mt * t * cpX + t * t * n2.x;
+          const by = mt * mt * n1.y + 2 * mt * t * cpY + t * t * n2.y;
+          const d = Math.hypot(px - bx, py - by);
+          if (d < minDist) minDist = d;
+        }
+        return minDist;
+      }
+
+      function getEdgeAt(px, py) {
+        for (const edge of edges) {
+          const n1 = getNodeById(edge.a);
+          const n2 = getNodeById(edge.b);
+          if (!n1 || !n2) continue;
+          if (distanceToEdge(px, py, n1, n2) <= CONFIG.edgeHitTolerance) return edge;
+        }
+        return null;
+      }
+
+      function getCanvasPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      }
+
+      // ============================================================
+      // 8. POINTER EVENTS
+      // ============================================================
+      function onPointerDown(e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+        const pos = getCanvasPos(e);
+        mouse.x = pos.x;
+        mouse.y = pos.y;
+
+        const node = getNodeAt(pos.x, pos.y);
+
+        if (connectMode && node) {
+          e.preventDefault();
+          connectDrag.active = true;
+          connectDrag.fromNode = node;
+          connectDrag.currentX = pos.x;
+          connectDrag.currentY = pos.y;
+          canvas.setPointerCapture(e.pointerId);
+          canvas.classList.add('connecting');
+          return;
+        }
+
+        if (node) {
+          e.preventDefault();
+          dragState.active = true;
+          dragState.node = node;
+          dragState.offsetX = node.x - pos.x;
+          dragState.offsetY = node.y - pos.y;
+          dragState.startX = pos.x;
+          dragState.startY = pos.y;
+          dragState.moved = false;
+          dragState.pointerId = e.pointerId;
+          canvas.setPointerCapture(e.pointerId);
+          canvas.classList.add('grabbing');
+        }
+      }
+
+      function onPointerMove(e) {
+        const pos = getCanvasPos(e);
+        mouse.x = pos.x;
+        mouse.y = pos.y;
+
+        if (connectDrag.active) {
+          e.preventDefault();
+          connectDrag.currentX = pos.x;
+          connectDrag.currentY = pos.y;
+          return;
+        }
+
+        if (dragState.active && dragState.node) {
+          e.preventDefault();
+          const dx = pos.x - dragState.startX;
+          const dy = pos.y - dragState.startY;
+          if (Math.abs(dx) > CONFIG.dragThreshold || Math.abs(dy) > CONFIG.dragThreshold) {
+            dragState.moved = true;
+          }
+          if (dragState.moved) {
+            dragState.node.x = pos.x + dragState.offsetX;
+            dragState.node.y = pos.y + dragState.offsetY;
+          }
+        } else {
+          if (e.pointerType === 'mouse') {
+            const hovered = getNodeAt(pos.x, pos.y);
+            canvas.classList.toggle('on-node', !!hovered);
+            canvas.classList.toggle('connecting', connectMode && !!hovered);
+          }
+        }
+      }
+
+      function onPointerUp(e) {
+        if (connectDrag.active) {
+          e.preventDefault();
+          const pos = getCanvasPos(e);
+          const targetNode = getNodeAt(pos.x, pos.y);
+
+          if (targetNode && targetNode !== connectDrag.fromNode) {
+            addEdge(connectDrag.fromNode.id, targetNode.id);
+          }
+
+          connectDrag.active = false;
+          connectDrag.fromNode = null;
+          canvas.classList.remove('connecting');
+          if (canvas.hasPointerCapture(e.pointerId)) {
+            canvas.releasePointerCapture(e.pointerId);
+          }
+          return;
+        }
+
+        const wasDragging = dragState.moved;
+        const node = dragState.node;
+
+        canvas.classList.remove('grabbing');
+
+        if (node) {
+          if (!wasDragging) {
+            openEditor(node, e.clientX, e.clientY);
+          } else {
+            node.vx += (Math.random() - 0.5) * 0.05;
+            node.vy += (Math.random() - 0.5) * 0.05;
+          }
+        } else if (!wasDragging) {
+          const pos = getCanvasPos(e);
+          const hitEdge = getEdgeAt(pos.x, pos.y);
+          if (hitEdge) {
+            removeEdge(hitEdge);
+          }
+        }
+
+        dragState.active = false;
+        dragState.node = null;
+        dragState.moved = false;
+        dragState.pointerId = null;
+
+        if (canvas.hasPointerCapture(e.pointerId)) {
+          canvas.releasePointerCapture(e.pointerId);
+        }
+      }
+
+      function onPointerCancel(e) {
+        dragState.active = false;
+        dragState.node = null;
+        dragState.moved = false;
+        connectDrag.active = false;
+        connectDrag.fromNode = null;
+        canvas.classList.remove('grabbing', 'connecting');
+      }
+
+      canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointermove', onPointerMove);
+      canvas.addEventListener('pointerup', onPointerUp);
+      canvas.addEventListener('pointercancel', onPointerCancel);
+      canvas.addEventListener('pointerleave', (e) => {
+        if (e.pointerType === 'mouse') {
+          mouse.x = null;
+          mouse.y = null;
+          canvas.classList.remove('on-node', 'connecting');
+        }
+      });
+
+      // ============================================================
+      // 9. DOUBLE-TAP → add node
+      // ============================================================
+      let lastTap = 0;
+      let lastTapPos = { x: 0, y: 0 };
+
+      canvas.addEventListener('pointerup', (e) => {
+        if (dragState.moved) return;
+        if (dragState.node) return;
+        if (connectDrag.active) return;
+
+        const pos = getCanvasPos(e);
+        const existing = getNodeAt(pos.x, pos.y);
+        if (existing) return;
+        const hitEdge = getEdgeAt(pos.x, pos.y);
+        if (hitEdge) return;
+
+        const now = Date.now();
+        const timeSince = now - lastTap;
+        const distSince = Math.hypot(pos.x - lastTapPos.x, pos.y - lastTapPos.y);
+
+        if (timeSince < 350 && distSince < 40) {
+          const newNode = new Node(
+            { label: 'New node', x: pos.x, y: pos.y },
+            width, height
+          );
+          newNode.vx = 0;
+          newNode.vy = 0;
+          nodes.push(newNode);
+          openEditor(newNode, e.clientX, e.clientY);
+          lastTap = 0;
+        } else {
+          lastTap = now;
+          lastTapPos = pos;
+        }
+      });
+
+      // ============================================================
+      // 10. EDITOR
+      // ============================================================
+      function openEditor(node, clientX, clientY) {
+        editingNode = node;
+        nodeLabelInput.value = node.label;
+
+        const panelW = 260;
+        const panelH = 190;
+        let left = clientX + 14;
+        let top = clientY + 14;
+        if (left + panelW > window.innerWidth - 10) left = window.innerWidth - panelW - 10;
+        if (top + panelH > window.innerHeight - 10) top = window.innerHeight - panelH - 10;
+        if (left < 10) left = 10;
+        if (top < 10) top = 10;
+
+        editor.style.left = left + 'px';
+        editor.style.top = top + 'px';
+        editor.classList.add('visible');
+
+        setTimeout(() => {
+          nodeLabelInput.focus();
+          nodeLabelInput.select();
+        }, 0);
+      }
+
+      function closeEditor() {
+        editingNode = null;
+        editor.classList.remove('visible');
+      }
+
+      saveBtn.addEventListener('click', () => {
+        if (editingNode) {
+          editingNode.label = nodeLabelInput.value.trim();
+        }
+        closeEditor();
+      });
+
+      nodeLabelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveBtn.click();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeEditor();
+        }
+      });
+
+      deleteBtn.addEventListener('click', () => {
+        if (editingNode) {
+          const id = editingNode.id;
+          nodes = nodes.filter(n => n !== editingNode);
+          edges = edges.filter(e => e.a !== id && e.b !== id);
+        }
+        closeEditor();
+      });
+
+      canvas.addEventListener('pointerdown', (e) => {
+        if (!editor.classList.contains('visible')) return;
+        const pos = getCanvasPos(e);
+        if (!getNodeAt(pos.x, pos.y)) {
+          closeEditor();
+        }
+      }, true);
+
+      // ============================================================
+      // 11. TOOLBAR
+      // ============================================================
+      connectBtn.addEventListener('click', () => {
+        connectMode = !connectMode;
+        connectBtn.classList.toggle('active', connectMode);
+        connectBtn.textContent = connectMode ? '🔗 Connect: ON' : '🔗 Connect: OFF';
+        canvas.classList.toggle('connecting', connectMode);
+      });
+
+      resetBtn.addEventListener('click', () => {
+        closeEditor();
+        dragState.active = false;
+        dragState.node = null;
+        connectDrag.active = false;
+        connectDrag.fromNode = null;
+        initNodes();
+      });
+
+      // ============================================================
+      // 12. BOOT
+      // ============================================================
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => resize(true), 150);
+      });
+
+      document.addEventListener('gesturestart', (e) => e.preventDefault());
+      document.addEventListener('touchmove', (e) => {
+        if (e.target === canvas) e.preventDefault();
+      }, { passive: false });
+
+      function start() {
+        resize(false);
+        if (rafId) cancelAnimationFrame(rafId);
+        animate();
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start);
+      } else {
+        start();
+      }
+    })();
+  </script>
+</body>
+</html>
